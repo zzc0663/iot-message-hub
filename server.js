@@ -122,6 +122,15 @@ function clampLimit(value, min, max, fallback) {
   return Math.min(max, Math.max(min, parsed));
 }
 
+function toIsoDateOrNull(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function openDatabase(dbPath) {
   ensureDatabasePath(dbPath);
 
@@ -242,6 +251,11 @@ function createStore(db, config) {
     FROM message_logs
   `);
 
+  const deleteLatestDevice = db.prepare(`
+    DELETE FROM device_latest
+    WHERE serial_no = ?
+  `);
+
   return {
     logMessage(entry) {
       insertMessageLog.run(
@@ -281,6 +295,99 @@ function createStore(db, config) {
 
     listRecentMessages(limit = config.recentMessagesLimit) {
       return selectRecentMessages.all(limit).map((row) => toMessageView(row));
+    },
+
+    listDeviceMessages(serialNo, options = {}) {
+      const limit = clampLimit(options.limit || 50, 1, 200, 50);
+      const offset = Math.max(0, Number.parseInt(String(options.offset || 0), 10) || 0);
+      const filters = [];
+      const params = [serialNo];
+
+      if (options.alarmType && ALARM_LABELS[options.alarmType]) {
+        filters.push("alarm_type = ?");
+        params.push(options.alarmType);
+      }
+
+      const startAt = toIsoDateOrNull(options.startAt);
+      if (startAt) {
+        filters.push("device_timestamp >= ?");
+        params.push(startAt);
+      }
+
+      const endAt = toIsoDateOrNull(options.endAt);
+      if (endAt) {
+        filters.push("device_timestamp <= ?");
+        params.push(endAt);
+      }
+
+      const whereClause = [
+        "parse_status = 'valid'",
+        "serial_no = ?",
+        ...filters,
+      ].join(" AND ");
+
+      const statement = db.prepare(`
+        SELECT
+          id,
+          topic,
+          serial_no AS serialNo,
+          pressure,
+          temperature,
+          alarm_type AS alarmType,
+          device_timestamp AS updatedAt,
+          received_at AS receivedAt,
+          parse_status AS parseStatus,
+          error_message AS errorMessage
+        FROM message_logs
+        WHERE ${whereClause}
+        ORDER BY id DESC
+        LIMIT ?
+        OFFSET ?
+      `);
+
+      return statement.all(...params, limit, offset).map((row) => toMessageView(row));
+    },
+
+    countDeviceMessages(serialNo, options = {}) {
+      const filters = [];
+      const params = [serialNo];
+
+      if (options.alarmType && ALARM_LABELS[options.alarmType]) {
+        filters.push("alarm_type = ?");
+        params.push(options.alarmType);
+      }
+
+      const startAt = toIsoDateOrNull(options.startAt);
+      if (startAt) {
+        filters.push("device_timestamp >= ?");
+        params.push(startAt);
+      }
+
+      const endAt = toIsoDateOrNull(options.endAt);
+      if (endAt) {
+        filters.push("device_timestamp <= ?");
+        params.push(endAt);
+      }
+
+      const whereClause = [
+        "parse_status = 'valid'",
+        "serial_no = ?",
+        ...filters,
+      ].join(" AND ");
+
+      const statement = db.prepare(`
+        SELECT COUNT(*) AS total
+        FROM message_logs
+        WHERE ${whereClause}
+      `);
+
+      const summary = statement.get(...params);
+      return summary?.total || 0;
+    },
+
+    deleteDevice(serialNo) {
+      const result = deleteLatestDevice.run(serialNo);
+      return Number(result.changes || 0) > 0;
     },
 
     getMessageSummary() {
@@ -526,6 +633,64 @@ function createMonitorServer(config = {}) {
     return store.getDashboardSnapshot();
   }
 
+  function getDeviceHistory(serialNo, options = {}) {
+    const device = store.getDevice(serialNo);
+    if (!device) {
+      return null;
+    }
+
+    const limit = clampLimit(options.limit || 8, 1, 200, 8);
+    const page = Math.max(1, Number.parseInt(String(options.page || 1), 10) || 1);
+    const offset = (page - 1) * limit;
+    const filters = {
+      alarmType: options.alarmType && ALARM_LABELS[options.alarmType] ? options.alarmType : "",
+      startAt: toIsoDateOrNull(options.startAt),
+      endAt: toIsoDateOrNull(options.endAt),
+    };
+    const total = store.countDeviceMessages(serialNo, filters);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const currentPage = Math.min(page, totalPages);
+
+    return {
+      device,
+      items: store.listDeviceMessages(serialNo, {
+        ...filters,
+        limit,
+        offset: (currentPage - 1) * limit,
+      }),
+      total,
+      page: currentPage,
+      limit,
+      totalPages,
+      filters,
+    };
+  }
+
+  function deleteDevice(serialNo) {
+    const existingDevice = store.getDevice(serialNo);
+    if (!existingDevice) {
+      return null;
+    }
+
+    const deleted = store.deleteDevice(serialNo);
+    if (!deleted) {
+      return null;
+    }
+
+    const stats = buildStats(store.listDevices(), store.getMessageSummary());
+    broadcaster.broadcast({
+      type: "device_deleted",
+      serialNo,
+      stats,
+    });
+
+    return {
+      serialNo,
+      deleted: true,
+      stats,
+    };
+  }
+
   function broadcastSnapshot() {
     const snapshot = getDashboardSnapshot();
     broadcaster.broadcast({
@@ -557,6 +722,42 @@ function createMonitorServer(config = {}) {
       total: items.length,
       stats: buildStats(store.listDevices(), store.getMessageSummary()),
     });
+  });
+
+  app.get("/api/devices/:serialNo/history", (req, res) => {
+    const serialNo = String(req.params.serialNo || "").trim();
+    const history = getDeviceHistory(serialNo, {
+      limit: req.query.limit || 8,
+      page: req.query.page || 1,
+      alarmType: String(req.query.alarmType || "").trim(),
+      startAt: String(req.query.startAt || "").trim(),
+      endAt: String(req.query.endAt || "").trim(),
+    });
+
+    if (!history) {
+      res.status(404).json({
+        error: "Device not found",
+        serialNo,
+      });
+      return;
+    }
+
+    res.json(history);
+  });
+
+  app.delete("/api/devices/:serialNo", (req, res) => {
+    const serialNo = String(req.params.serialNo || "").trim();
+    const result = deleteDevice(serialNo);
+
+    if (!result) {
+      res.status(404).json({
+        error: "Device not found",
+        serialNo,
+      });
+      return;
+    }
+
+    res.json(result);
   });
 
   app.get("/api/messages", (req, res) => {
@@ -794,6 +995,8 @@ function createMonitorServer(config = {}) {
     stop,
     processIncomingPayload,
     listDevices: () => store.listDevices(),
+    deleteDevice,
+    getDeviceHistory,
     getDashboardSnapshot,
   };
 }

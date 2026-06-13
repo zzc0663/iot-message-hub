@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>设备详情</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="detail">
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="brand-kicker">IoT Message Hub</p>
+          <h1>设备详情</h1>
+        </div>
+        <nav class="topnav">
+          <a class="topnav-link" href="./">监控主页</a>
+          <a class="topnav-link" href="./devices.html">设备管理</a>
+        </nav>
+      </header>
+
+      <section class="status-strip">
+        <div class="status-card">
+          <span>实时链路</span>
+          <strong id="stream-status">连接中</strong>
+        </div>
+        <p class="status-note" id="last-updated">等待数据...</p>
+      </section>
+
+      <main class="stack-layout">
+        <section class="content-panel">
+          <div class="panel-head compact">
+            <div>
+              <h2>当前设备</h2>
+              <p id="device-page-subtitle">正在加载设备信息...</p>
+            </div>
+            <a class="action-button ghost" href="./">返回主页</a>
+          </div>
+          <div id="device-summary" class="detail-block">
+            <div class="message-empty">设备详情加载中...</div>
+          </div>
+        </section>
+
+        <section class="content-panel">
+          <div class="panel-head compact">
+            <div>
+              <h2>历史消息</h2>
+              <p>按设备查看历史上报记录，支持时间和报警类型筛选。</p>
+            </div>
+          </div>
+
+          <div class="history-filter-grid">
+            <label class="field-group">
+              <span>报警类型</span>
+              <select id="history-alarm-filter">
+                <option value="">全部类型</option>
+                <option value="normal">运行正常</option>
+                <option value="leak">泄露报警</option>
+                <option value="overtemp">超温报警</option>
+                <option value="burst">爆管报警</option>
+              </select>
+            </label>
+            <label class="field-group">
+              <span>开始时间</span>
+              <input id="history-start-at" type="datetime-local" />
+            </label>
+            <label class="field-group">
+              <span>结束时间</span>
+              <input id="history-end-at" type="datetime-local" />
+            </label>
+          </div>
+
+          <div class="history-action-row">
+            <button class="action-button primary" id="apply-history-filters" type="button">查询历史</button>
+            <button class="action-button ghost" id="reset-history-filters" type="button">重置筛选</button>
+          </div>
+
+          <div id="history-list" class="history-list">
+            <div class="message-empty">历史消息加载中...</div>
+          </div>
+
+          <div class="pager-row">
+            <button class="action-button ghost" id="prev-history-page" type="button">上一页</button>
+            <span class="pager-text" id="history-pager-text">当前第 1 页，共 1 页</span>
+            <button class="action-button ghost" id="next-history-page" type="button">下一页</button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./shared.js"></script>
+    <script src="./device.js"></script>
+  </body>
+</html>

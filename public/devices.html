@@ -3,30 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>设备监控主页</title>
+    <title>设备管理</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body data-page="monitor">
+  <body data-page="devices">
     <div class="app-shell">
       <header class="topbar">
         <div>
           <p class="brand-kicker">IoT Message Hub</p>
-          <h1>设备监控主页</h1>
+          <h1>设备管理</h1>
         </div>
         <nav class="topnav">
-          <a class="topnav-link active" href="./">监控主页</a>
-          <a class="topnav-link" href="./devices.html">设备管理</a>
+          <a class="topnav-link" href="./">监控主页</a>
+          <a class="topnav-link active" href="./devices.html">设备管理</a>
         </nav>
       </header>
 
       <section class="status-strip">
         <div class="status-card">
-          <span>实时链路</span>
-          <strong id="stream-status">连接中</strong>
-        </div>
-        <div class="status-card">
           <span>设备总数</span>
           <strong id="stat-total-devices">0</strong>
+        </div>
+        <div class="status-card">
+          <span>在线设备</span>
+          <strong id="stat-online-devices">0</strong>
         </div>
         <div class="status-card">
           <span>报警设备</span>
@@ -38,21 +38,12 @@
       <main class="content-panel">
         <div class="panel-head compact">
           <div>
-            <h2>最新设备状态</h2>
-            <p>首页只展示每台设备当前最新数据，点击设备进入详情页。</p>
+            <h2>设备列表</h2>
+            <p>在这里查看全部设备，并执行删除操作。</p>
           </div>
         </div>
 
         <div class="toolbar-row">
-          <div class="chip-row" id="alarm-filters">
-            <button class="filter-chip active" data-filter="all" type="button">全部</button>
-            <button class="filter-chip" data-filter="alerts" type="button">仅报警</button>
-            <button class="filter-chip" data-filter="offline" type="button">离线</button>
-            <button class="filter-chip" data-filter="normal" type="button">正常</button>
-            <button class="filter-chip" data-filter="leak" type="button">泄露</button>
-            <button class="filter-chip" data-filter="overtemp" type="button">超温</button>
-            <button class="filter-chip" data-filter="burst" type="button">爆管</button>
-          </div>
           <label class="search-field inline">
             <span>设备搜索</span>
             <input id="device-search-input" type="search" placeholder="输入序列号快速定位设备" />
@@ -67,13 +58,14 @@
                 <th>状态</th>
                 <th>压力</th>
                 <th>温度</th>
-                <th>报警类型</th>
+                <th>报警</th>
                 <th>更新时间</th>
+                <th>操作</th>
               </tr>
             </thead>
-            <tbody id="device-table-body">
+            <tbody id="management-table-body">
               <tr class="empty-row">
-                <td colspan="6">当前还没有设备上报数据</td>
+                <td colspan="7">当前还没有设备数据</td>
               </tr>
             </tbody>
           </table>
@@ -82,6 +74,6 @@
     </div>
 
     <script src="./shared.js"></script>
-    <script src="./monitor.js"></script>
+    <script src="./devices.js"></script>
   </body>
 </html>

@@ -187,6 +187,205 @@ test("dashboard snapshot includes stats and recent messages", () => {
   monitor.stop();
 });
 
+test("device history returns valid messages for selected device in reverse chronological order", () => {
+  const monitor = createMonitorServer({
+    port: 0,
+    mqttPort: 0,
+    mqttTopic: "devices/telemetry",
+    mqttUsername: "",
+    mqttPassword: "",
+    dbPath: ":memory:",
+    mqttDisabled: true,
+  });
+
+  monitor.processIncomingPayload(
+    "devices/telemetry",
+    JSON.stringify({
+      serialNo: "DEV-HISTORY",
+      pressure: 1.1,
+      temperature: 35.4,
+      alarmType: "normal",
+      timestamp: "2026-06-13T10:00:00Z",
+    })
+  );
+
+  monitor.processIncomingPayload(
+    "devices/telemetry",
+    JSON.stringify({
+      serialNo: "DEV-OTHER",
+      pressure: 2.2,
+      temperature: 45.8,
+      alarmType: "leak",
+      timestamp: "2026-06-13T10:01:00Z",
+    })
+  );
+
+  monitor.processIncomingPayload(
+    "devices/telemetry",
+    JSON.stringify({
+      serialNo: "DEV-HISTORY",
+      pressure: 1.6,
+      temperature: 39.2,
+      alarmType: "overtemp",
+      timestamp: "2026-06-13T10:02:00Z",
+    })
+  );
+
+  const history = monitor.getDeviceHistory("DEV-HISTORY", { limit: 50, page: 1 });
+
+  assert.ok(history);
+  assert.equal(history.device.serialNo, "DEV-HISTORY");
+  assert.equal(history.total, 2);
+  assert.equal(history.items.length, 2);
+  assert.equal(history.items[0].alarmType, "overtemp");
+  assert.equal(history.items[1].alarmType, "normal");
+
+  monitor.stop();
+});
+
+test("device history returns null for unknown device", () => {
+  const monitor = createMonitorServer({
+    port: 0,
+    mqttPort: 0,
+    mqttTopic: "devices/telemetry",
+    mqttUsername: "",
+    mqttPassword: "",
+    dbPath: ":memory:",
+    mqttDisabled: true,
+  });
+
+  const history = monitor.getDeviceHistory("NOT-FOUND", { limit: 50, page: 1 });
+  assert.equal(history, null);
+
+  monitor.stop();
+});
+
+test("device history supports pagination and alarm filtering", () => {
+  const monitor = createMonitorServer({
+    port: 0,
+    mqttPort: 0,
+    mqttTopic: "devices/telemetry",
+    mqttUsername: "",
+    mqttPassword: "",
+    dbPath: ":memory:",
+    mqttDisabled: true,
+  });
+
+  monitor.processIncomingPayload(
+    "devices/telemetry",
+    JSON.stringify({
+      serialNo: "DEV-PAGE",
+      pressure: 1.1,
+      temperature: 31.1,
+      alarmType: "normal",
+      timestamp: "2026-06-13T10:00:00Z",
+    })
+  );
+
+  monitor.processIncomingPayload(
+    "devices/telemetry",
+    JSON.stringify({
+      serialNo: "DEV-PAGE",
+      pressure: 1.2,
+      temperature: 32.2,
+      alarmType: "leak",
+      timestamp: "2026-06-13T10:01:00Z",
+    })
+  );
+
+  monitor.processIncomingPayload(
+    "devices/telemetry",
+    JSON.stringify({
+      serialNo: "DEV-PAGE",
+      pressure: 1.3,
+      temperature: 33.3,
+      alarmType: "overtemp",
+      timestamp: "2026-06-13T10:02:00Z",
+    })
+  );
+
+  const firstPage = monitor.getDeviceHistory("DEV-PAGE", {
+    limit: 2,
+    page: 1,
+  });
+  const secondPage = monitor.getDeviceHistory("DEV-PAGE", {
+    limit: 2,
+    page: 2,
+  });
+  const leakOnly = monitor.getDeviceHistory("DEV-PAGE", {
+    limit: 10,
+    page: 1,
+    alarmType: "leak",
+  });
+
+  assert.equal(firstPage.total, 3);
+  assert.equal(firstPage.totalPages, 2);
+  assert.equal(firstPage.items.length, 2);
+  assert.equal(firstPage.items[0].alarmType, "overtemp");
+  assert.equal(firstPage.items[1].alarmType, "leak");
+
+  assert.equal(secondPage.page, 2);
+  assert.equal(secondPage.items.length, 1);
+  assert.equal(secondPage.items[0].alarmType, "normal");
+
+  assert.equal(leakOnly.total, 1);
+  assert.equal(leakOnly.totalPages, 1);
+  assert.equal(leakOnly.items.length, 1);
+  assert.equal(leakOnly.items[0].alarmType, "leak");
+
+  monitor.stop();
+});
+
+test("deleteDevice removes latest device entry from dashboards", () => {
+  const monitor = createMonitorServer({
+    port: 0,
+    mqttPort: 0,
+    mqttTopic: "devices/telemetry",
+    mqttUsername: "",
+    mqttPassword: "",
+    dbPath: ":memory:",
+    mqttDisabled: true,
+  });
+
+  monitor.processIncomingPayload(
+    "devices/telemetry",
+    JSON.stringify({
+      serialNo: "DEV-DEL",
+      pressure: 1.8,
+      temperature: 43.2,
+      alarmType: "burst",
+      timestamp: "2026-06-13T10:10:00Z",
+    })
+  );
+
+  assert.equal(monitor.listDevices().length, 1);
+
+  const deleted = monitor.deleteDevice("DEV-DEL");
+  assert.ok(deleted);
+  assert.equal(deleted.serialNo, "DEV-DEL");
+  assert.equal(deleted.deleted, true);
+  assert.deepEqual(monitor.listDevices(), []);
+  assert.equal(monitor.getDeviceHistory("DEV-DEL", { limit: 10, page: 1 }), null);
+
+  monitor.stop();
+});
+
+test("deleteDevice returns null for unknown device", () => {
+  const monitor = createMonitorServer({
+    port: 0,
+    mqttPort: 0,
+    mqttTopic: "devices/telemetry",
+    mqttUsername: "",
+    mqttPassword: "",
+    dbPath: ":memory:",
+    mqttDisabled: true,
+  });
+
+  assert.equal(monitor.deleteDevice("DEV-NOPE"), null);
+
+  monitor.stop();
+});
+
 test("messages api style filters can be derived from dashboard snapshot", () => {
   const monitor = createMonitorServer({
     port: 0,
