@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MQTT 设备监控演示</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy-wrap">
+          <p class="eyebrow">MQTT Device Monitor</p>
+          <h1>嵌入式设备实时监控</h1>
+          <p class="hero-copy">
+            将实时上报、在线状态、报警视图和最近消息汇总到一个页面，方便演示也方便现场值守。
+          </p>
+        </div>
+        <div class="hero-side">
+          <div class="hero-pill">
+            <span>实时链路</span>
+            <strong id="stream-status">连接中</strong>
+          </div>
+          <p class="hero-note" id="last-updated">等待数据...</p>
+        </div>
+      </header>
+
+      <section class="stats-grid">
+        <article class="stats-tile">
+          <span class="tile-label">设备总数</span>
+          <strong id="stat-total-devices">0</strong>
+        </article>
+        <article class="stats-tile">
+          <span class="tile-label">在线设备</span>
+          <strong id="stat-online-devices">0</strong>
+        </article>
+        <article class="stats-tile">
+          <span class="tile-label">离线设备</span>
+          <strong id="stat-offline-devices">0</strong>
+        </article>
+        <article class="stats-tile">
+          <span class="tile-label">报警设备</span>
+          <strong id="stat-alert-devices">0</strong>
+        </article>
+        <article class="stats-tile">
+          <span class="tile-label">累计消息</span>
+          <strong id="stat-total-messages">0</strong>
+        </article>
+      </section>
+
+      <section class="dashboard-grid">
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <h2>设备总览</h2>
+              <p>按设备最新状态展示，支持快速筛选报警和离线设备。</p>
+            </div>
+            <div class="legend">
+              <span class="legend-item normal">运行正常</span>
+              <span class="legend-item alert">报警状态</span>
+              <span class="legend-item offline">离线设备</span>
+            </div>
+          </div>
+
+          <div class="filter-bar" id="alarm-filters">
+            <button class="filter-chip active" data-filter="all" type="button">全部</button>
+            <button class="filter-chip" data-filter="alerts" type="button">仅报警</button>
+            <button class="filter-chip" data-filter="offline" type="button">离线</button>
+            <button class="filter-chip" data-filter="normal" type="button">正常</button>
+            <button class="filter-chip" data-filter="leak" type="button">泄露</button>
+            <button class="filter-chip" data-filter="overtemp" type="button">超温</button>
+            <button class="filter-chip" data-filter="burst" type="button">爆管</button>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>设备序列号</th>
+                  <th>连接状态</th>
+                  <th>压力</th>
+                  <th>温度</th>
+                  <th>报警类型</th>
+                  <th>更新时间</th>
+                </tr>
+              </thead>
+              <tbody id="device-table-body">
+                <tr class="empty-row">
+                  <td colspan="6">当前还没有设备上报数据</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>最近消息</h2>
+              <p>最新接收的有效 MQTT 上报消息。</p>
+            </div>
+          </div>
+
+          <div class="message-list" id="recent-message-list">
+            <div class="message-empty">当前还没有消息记录</div>
+          </div>
+        </article>
+      </section>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
