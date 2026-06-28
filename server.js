@@ -1,10 +1,57 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { createServer: createTcpServer } = require("node:net");
 const { DatabaseSync } = require("node:sqlite");
 
 const express = require("express");
 const { Aedes } = require("aedes");
+
+// ── JWT 工具（基于 Node 内置 crypto，无第三方依赖） ─────
+
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
+const JWT_EXPIRES_SECONDS = 24 * 60 * 60; // 24 小时
+
+function base64urlEncode(buf) {
+  return Buffer.from(buf).toString("base64url");
+}
+
+function signToken(appCode) {
+  const header = base64urlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64urlEncode(JSON.stringify({
+    sub: appCode,
+    iat: now,
+    exp: now + JWT_EXPIRES_SECONDS,
+  }));
+  const signature = crypto
+    .createHmac("sha256", JWT_SECRET)
+    .update(`${header}.${payload}`)
+    .digest("base64url");
+  return `${header}.${payload}.${signature}`;
+}
+
+function verifyToken(token) {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+
+  const [header, payload, signature] = parts;
+  const expectedSig = crypto
+    .createHmac("sha256", JWT_SECRET)
+    .update(`${header}.${payload}`)
+    .digest("base64url");
+
+  if (signature !== expectedSig) return null;
+
+  try {
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString());
+    if (data.exp && Math.floor(Date.now() / 1000) > data.exp) return null;
+    return data.sub || null;
+  } catch {
+    return null;
+  }
+}
 
 const ALARM_LABELS = {
   normal: "运行正常",
@@ -150,6 +197,15 @@ function openDatabase(dbPath) {
       last_topic TEXT NOT NULL,
       last_received_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS bindings (
+      app_code TEXT NOT NULL,
+      serial_no TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (app_code, serial_no)
+    );
+    CREATE INDEX IF NOT EXISTS idx_bindings_app_code ON bindings(app_code);
+    CREATE INDEX IF NOT EXISTS idx_bindings_serial_no ON bindings(serial_no);
   `);
 
   return db;
@@ -242,6 +298,27 @@ function createStore(db, config) {
     FROM message_logs
   `);
 
+  // ── 绑定相关预编译语句 ──────────────────────────────
+
+  const insertBinding = db.prepare(`
+    INSERT OR IGNORE INTO bindings (app_code, serial_no) VALUES (?, ?)
+  `);
+
+  const deleteBinding = db.prepare(`
+    DELETE FROM bindings WHERE app_code = ? AND serial_no = ?
+  `);
+
+  const selectBindingsByApp = db.prepare(`
+    SELECT serial_no AS serialNo, created_at AS createdAt
+    FROM bindings
+    WHERE app_code = ?
+    ORDER BY created_at DESC
+  `);
+
+  const selectBoundSerialNos = db.prepare(`
+    SELECT serial_no FROM bindings WHERE app_code = ?
+  `);
+
   return {
     logMessage(entry) {
       insertMessageLog.run(
@@ -301,6 +378,24 @@ function createStore(db, config) {
         recentMessages,
         stats: buildStats(devices, this.getMessageSummary()),
       };
+    },
+
+    // ── 绑定操作 ──────────────────────────────────────
+
+    bindDevice(appCode, serialNo) {
+      insertBinding.run(appCode, serialNo);
+    },
+
+    unbindDevice(appCode, serialNo) {
+      deleteBinding.run(appCode, serialNo);
+    },
+
+    listBindings(appCode) {
+      return selectBindingsByApp.all(appCode);
+    },
+
+    getBoundSerialNos(appCode) {
+      return selectBoundSerialNos.all(appCode).map((r) => r.serial_no);
     },
   };
 }
@@ -437,15 +532,22 @@ function normalizeMessage(payloadBuffer, topic, receivedAt = new Date().toISOStr
 }
 
 function createBroadcaster() {
-  const clients = new Set();
+  // clients: Map<res, { boundSerialNos: string[] | null }>
+  // null 表示未绑定（返回所有数据），数组表示只返回该列表中的设备
+  const clients = new Map();
 
   function send(res, payload) {
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   }
 
+  function isDeviceBound(clientInfo, serialNo) {
+    if (!clientInfo.boundSerialNos) return true; // 未绑定 → 全部
+    return clientInfo.boundSerialNos.includes(serialNo);
+  }
+
   return {
-    addClient(res) {
-      clients.add(res);
+    addClient(res, boundSerialNos = null) {
+      clients.set(res, { boundSerialNos });
       send(res, { type: "connected", connectedAt: new Date().toISOString() });
     },
 
@@ -453,14 +555,44 @@ function createBroadcaster() {
       clients.delete(res);
     },
 
+    broadcastDeviceUpdate(payload) {
+      for (const [client, info] of clients) {
+        if (isDeviceBound(info, payload.device?.serialNo)) {
+          send(client, payload);
+        }
+      }
+    },
+
+    broadcastSnapshot(snapshotPayload) {
+      for (const [client, info] of clients) {
+        if (!info.boundSerialNos) {
+          // 未绑定 → 发送完整快照
+          send(client, snapshotPayload);
+        } else {
+          // 按绑定过滤
+          const filtered = {
+            type: "snapshot",
+            devices: snapshotPayload.devices.filter((d) =>
+              info.boundSerialNos.includes(d.serialNo)
+            ),
+            recentMessages: snapshotPayload.recentMessages.filter((m) =>
+              info.boundSerialNos.includes(m.serialNo)
+            ),
+            stats: snapshotPayload.stats,
+          };
+          send(client, filtered);
+        }
+      }
+    },
+
     broadcast(payload) {
-      for (const client of clients) {
+      for (const [client] of clients) {
         send(client, payload);
       }
     },
 
     broadcastHeartbeat() {
-      for (const client of clients) {
+      for (const [client] of clients) {
         client.write(`: heartbeat ${Date.now()}\n\n`);
       }
     },
@@ -470,7 +602,7 @@ function createBroadcaster() {
     },
 
     closeAll() {
-      for (const client of clients) {
+      for (const [client] of clients) {
         client.end();
       }
       clients.clear();
@@ -512,7 +644,7 @@ function createMonitorServer(config = {}) {
     const message = store.listRecentMessages(1)[0] || null;
     const stats = buildStats(store.listDevices(), store.getMessageSummary());
 
-    broadcaster.broadcast({
+    broadcaster.broadcastDeviceUpdate({
       type: "device_update",
       device,
       message,
@@ -528,21 +660,111 @@ function createMonitorServer(config = {}) {
 
   function broadcastSnapshot() {
     const snapshot = getDashboardSnapshot();
-    broadcaster.broadcast({
+    broadcaster.broadcastSnapshot({
       type: "snapshot",
       ...snapshot,
     });
   }
 
+  app.use(express.json());
   app.use(express.static(path.join(__dirname, "public")));
 
-  app.get("/api/dashboard", (req, res) => {
-    res.json(getDashboardSnapshot());
+  // ── 认证中间件 ──────────────────────────────────────
+
+  function extractAppCode(req) {
+    const authHeader = req.headers.authorization || "";
+    if (authHeader.startsWith("Bearer ")) {
+      return verifyToken(authHeader.slice(7));
+    }
+    // SSE 也支持 query 参数传递 token
+    const token = String(req.query.token || "");
+    if (token) return verifyToken(token);
+    return null;
+  }
+
+  function requireAuth(req, res, next) {
+    const appCode = extractAppCode(req);
+    if (!appCode) {
+      // 向后兼容：无 token 时返回所有数据
+      req.appCode = null;
+      req.boundSerialNos = null;
+      return next();
+    }
+    req.appCode = appCode;
+    req.boundSerialNos = store.getBoundSerialNos(appCode);
+    next();
+  }
+
+  function filterByBindings(items, boundSerialNos, serialNoKey = "serialNo") {
+    if (!boundSerialNos) return items;
+    return items.filter((item) => boundSerialNos.includes(item[serialNoKey]));
+  }
+
+  // ── 绑定 API ───────────────────────────────────────
+
+  app.post("/api/app/register", (req, res) => {
+    const { appCode } = req.body || {};
+    if (!appCode || typeof appCode !== "string" || appCode.length > 128) {
+      return res.status(400).json({ error: "appCode 无效" });
+    }
+    const token = signToken(appCode.trim());
+    res.json({ token, appCode: appCode.trim() });
   });
 
-  app.get("/api/devices", (req, res) => {
+  app.get("/api/bindings", requireAuth, (req, res) => {
+    if (!req.appCode) {
+      return res.status(401).json({ error: "需要认证" });
+    }
+    const items = store.listBindings(req.appCode);
+    res.json({ items });
+  });
+
+  app.post("/api/bindings", requireAuth, (req, res) => {
+    if (!req.appCode) {
+      return res.status(401).json({ error: "需要认证" });
+    }
+    const { serialNo } = req.body || {};
+    if (!serialNo || typeof serialNo !== "string") {
+      return res.status(400).json({ error: "serialNo 无效" });
+    }
+    // 检查设备是否存在
+    const device = store.getDevice(serialNo.trim());
+    if (!device) {
+      return res.status(404).json({ error: "设备不存在" });
+    }
+    store.bindDevice(req.appCode, serialNo.trim());
+    const items = store.listBindings(req.appCode);
+    res.json({ items });
+  });
+
+  app.delete("/api/bindings/:serialNo", requireAuth, (req, res) => {
+    if (!req.appCode) {
+      return res.status(401).json({ error: "需要认证" });
+    }
+    store.unbindDevice(req.appCode, req.params.serialNo);
+    const items = store.listBindings(req.appCode);
+    res.json({ items });
+  });
+
+  // ── 仪表盘 API（按绑定过滤） ────────────────────────
+
+  app.get("/api/dashboard", requireAuth, (req, res) => {
+    const snapshot = getDashboardSnapshot();
+    if (req.boundSerialNos) {
+      snapshot.devices = filterByBindings(snapshot.devices, req.boundSerialNos);
+      snapshot.recentMessages = filterByBindings(snapshot.recentMessages, req.boundSerialNos);
+      snapshot.stats = buildStats(snapshot.devices, store.getMessageSummary());
+    }
+    res.json(snapshot);
+  });
+
+  app.get("/api/devices", requireAuth, (req, res) => {
     const filter = String(req.query.filter || "all");
     let items = store.listDevices();
+
+    if (req.boundSerialNos) {
+      items = filterByBindings(items, req.boundSerialNos);
+    }
 
     if (filter === "alerts") {
       items = items.filter((item) => item.isAlert);
@@ -552,19 +774,27 @@ function createMonitorServer(config = {}) {
       items = items.filter((item) => item.alarmType === filter);
     }
 
+    const allDevices = req.boundSerialNos
+      ? filterByBindings(store.listDevices(), req.boundSerialNos)
+      : store.listDevices();
+
     res.json({
       items,
       total: items.length,
-      stats: buildStats(store.listDevices(), store.getMessageSummary()),
+      stats: buildStats(allDevices, store.getMessageSummary()),
     });
   });
 
-  app.get("/api/messages", (req, res) => {
+  app.get("/api/messages", requireAuth, (req, res) => {
     const limit = clampLimit(req.query.limit || resolvedConfig.recentMessagesLimit, 1, 100, resolvedConfig.recentMessagesLimit);
     const serialNo = String(req.query.serialNo || "").trim();
     const alarmType = String(req.query.alarmType || "").trim();
 
     let items = store.listRecentMessages(limit * 5);
+
+    if (req.boundSerialNos) {
+      items = filterByBindings(items, req.boundSerialNos);
+    }
 
     if (serialNo) {
       items = items.filter((item) => item.serialNo === serialNo);
@@ -580,8 +810,11 @@ function createMonitorServer(config = {}) {
     });
   });
 
-  app.get("/api/stats", (req, res) => {
-    const devices = store.listDevices();
+  app.get("/api/stats", requireAuth, (req, res) => {
+    let devices = store.listDevices();
+    if (req.boundSerialNos) {
+      devices = filterByBindings(devices, req.boundSerialNos);
+    }
     res.json(buildStats(devices, store.getMessageSummary()));
   });
 
@@ -595,7 +828,10 @@ function createMonitorServer(config = {}) {
       res.flushHeaders();
     }
 
-    broadcaster.addClient(res);
+    // 从 query 参数提取 token → 获取绑定列表
+    const appCode = extractAppCode(req);
+    const boundSerialNos = appCode ? store.getBoundSerialNos(appCode) : null;
+    broadcaster.addClient(res, boundSerialNos);
 
     req.on("close", () => {
       broadcaster.removeClient(res);
