@@ -39,7 +39,7 @@ function loadConfig() {
     pressureMax: parseOptionalNumber(process.env.PRESSURE_MAX),
     temperatureMin: parseOptionalNumber(process.env.TEMPERATURE_MIN),
     temperatureMax: parseOptionalNumber(process.env.TEMPERATURE_MAX),
-    snapshotBroadcastIntervalSeconds: Number.parseInt(process.env.SNAPSHOT_BROADCAST_INTERVAL_SECONDS || "5", 10),
+    snapshotBroadcastIntervalSeconds: Number.parseFloat(process.env.SNAPSHOT_BROADCAST_INTERVAL_SECONDS || "0.5"),
   };
 }
 
@@ -731,7 +731,7 @@ function createMonitorServer(config = {}) {
 
     snapshotTimer = setInterval(() => {
       broadcastSnapshot();
-    }, Math.max(2, resolvedConfig.snapshotBroadcastIntervalSeconds) * 1000);
+    }, Math.max(0.1, resolvedConfig.snapshotBroadcastIntervalSeconds) * 1000);
 
     await startBroker();
     await startHttpServer();
